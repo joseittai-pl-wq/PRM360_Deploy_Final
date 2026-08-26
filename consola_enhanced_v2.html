@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PRM360 - Gestión de Expedientes</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        .login-container { background: white; border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); padding: 40px; width: 100%; max-width: 400px; display: none; }
+        .login-container.active { display: block; }
+        .login-container h1 { color: #667eea; margin-bottom: 30px; text-align: center; font-size: 28px; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; color: #333; font-weight: 500; }
+        .form-group input { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; }
+        .form-group input:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }
+        .btn { width: 100%; padding: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 5px; font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4); }
+        .app-container { background: white; border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); width: 100%; max-width: 1200px; display: none; overflow: hidden; }
+        .app-container.active { display: flex; flex-direction: column; }
+        .app-header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px 30px; display: flex; justify-content: space-between; align-items: center; }
+        .app-header h1 { font-size: 24px; }
+        .logout-btn { background: rgba(255,255,255,0.2); color: white; padding: 8px 16px; border: 1px solid rgba(255,255,255,0.4); border-radius: 5px; cursor: pointer; font-size: 14px; }
+        .tabs { display: flex; border-bottom: 1px solid #ddd; background: #f8f9fa; }
+        .tab-button { flex: 1; padding: 15px 20px; background: none; border: none; cursor: pointer; font-size: 14px; font-weight: 600; color: #666; border-bottom: 3px solid transparent; }
+        .tab-button.active { color: #667eea; border-bottom-color: #667eea; }
+        .tab-content { padding: 30px; display: none; }
+        .tab-content.active { display: block; }
+        .form-section { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .form-section.full { grid-template-columns: 1fr; }
+        .form-group textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; resize: vertical; min-height: 100px; font-family: inherit; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th { background: #f8f9fa; padding: 12px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+        td { padding: 12px; border-bottom: 1px solid #ddd; }
+        tr:hover { background: #f8f9fa; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-top: 20px; }
+        .stat-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; text-align: center; }
+        .stat-card .number { font-size: 32px; font-weight: bold; }
+        .alert { padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+        .alert-success { background: #d4edda; color: #155724; }
+        .alert-error { background: #f8d7da; color: #721c24; }
+        @media (max-width: 768px) { .form-section { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="login-container active" id="loginContainer">
+        <h1>🚀 PRM360</h1>
+        <p style="text-align: center; color: #999; margin-bottom: 30px;">Gestión de Expedientes</p>
+        <form id="loginForm" onsubmit="handleLogin(event)">
+            <div class="form-group">
+                <label>Usuario</label>
+                <input type="text" id="username" required placeholder="admin">
+            </div>
+            <div class="form-group">
+                <label>Contraseña</label>
+                <input type="password" id="password" required placeholder="••••••••">
+            </div>
+            <button type="submit" class="btn">Iniciar Sesión</button>
+            <div id="loginError" style="margin-top: 15px;"></div>
+        </form>
+    </div>
+
+    <div class="app-container" id="appContainer">
+        <div class="app-header">
+            <h1>🚀 PRM360</h1>
+            <button class="logout-btn" onclick="handleLogout()">Cerrar Sesión</button>
+        </div>
+
+        <div class="tabs">
+            <button class="tab-button active" onclick="switchTab('expedientes')">📋 Expedientes</button>
+            <button class="tab-button" onclick="switchTab('crear')">➕ Crear</button>
+            <button class="tab-button" onclick="switchTab('buscar')">🔍 Buscar</button>
+            <button class="tab-button" onclick="switchTab('estadisticas')">📊 Estadísticas</button>
+            <button class="tab-button" onclick="switchTab('auditoria')">📝 Auditoría</button>
+        </div>
+
+        <div class="tab-content active" id="expedientesTab">
+            <h2>Mis Expedientes</h2>
+            <button class="btn" onclick="loadExpedientes()" style="max-width: 200px; margin-bottom: 20px;">🔄 Recargar</button>
+            <div id="expedientesContainer"></div>
+        </div>
+
+        <div class="tab-content" id="crearTab">
+            <h2>Crear Nuevo Expediente</h2>
+            <form id="createForm" onsubmit="handleCreateExpediente(event)">
+                <div class="form-section">
+                    <div class="form-group">
+                        <label>Folio</label>
+                        <input type="text" id="folio" required placeholder="EXP-2026-001">
+                    </div>
+                    <div class="form-group">
+                        <label>Cliente</label>
+                        <input type="text" id="cliente" required placeholder="Nombre del cliente">
+                    </div>
+                </div>
+                <div class="form-section">
+                    <div class="form-group">
+                        <label>Estado</label>
+                        <select id="estado" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                            <option>Abierto</option>
+                            <option>En Revisión</option>
+                            <option>Entregado</option>
+                            <option>Archivado</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Monto</label>
+                        <input type="number" id="monto" step="0.01" placeholder="100000">
+                    </div>
+                </div>
+                <div class="form-section full">
+                    <div class="form-group">
+                        <label>Descripción</label>
+                        <textarea id="descripcion" placeholder="Descripción del expediente..."></textarea>
+                    </div>
+                </div>
+                <button type="submit" class="btn">✅ Crear Expediente</button>
+                <div id="createMessage" style="margin-top: 15px;"></div>
+            </form>
+        </div>
+
+        <div class="tab-content" id="buscarTab">
+            <h2>Buscar Expediente</h2>
+            <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                <input type="text" id="searchFolio" placeholder="Ingresa folio..." style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                <button onclick="handleSearch()" class="btn" style="max-width: 100px;">Buscar</button>
+            </div>
+            <div id="searchResults"></div>
+        </div>
+
+        <div class="tab-content" id="estadisticasTab">
+            <h2>Estadísticas</h2>
+            <div id="statsContainer"></div>
+        </div>
+
+        <div class="tab-content" id="auditoriaTab">
+            <h2>Historial de Auditoría</h2>
+            <div id="auditoriaContainer"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let currentToken = null;
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                if (!response.ok) throw new Error('Credenciales inválidas');
+
+                const data = await response.json();
+                currentToken = data.token;
+
+                document.getElementById('loginContainer').classList.remove('active');
+                document.getElementById('appContainer').classList.add('active');
+                loadExpedientes();
+            } catch (error) {
+                document.getElementById('loginError').innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            }
+        }
+
+        function handleLogout() {
+            currentToken = null;
+            document.getElementById('loginContainer').classList.add('active');
+            document.getElementById('appContainer').classList.remove('active');
+            document.getElementById('loginForm').reset();
+        }
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
+            document.getElementById(tabName + 'Tab').classList.add('active');
+            event.target.classList.add('active');
+
+            if (tabName === 'estadisticas') loadEstadisticas();
+            if (tabName === 'auditoria') loadAuditoria();
+        }
+
+        async function loadExpedientes() {
+            try {
+                const response = await fetch(`${API_BASE}/api/expedientes`, {
+                    headers: { 'x-user-token': currentToken }
+                });
+
+                const expedientes = await response.json();
+                let html = '';
+
+                if (expedientes.length === 0) {
+                    html = '<p style="color: #999;">No hay expedientes</p>';
+                } else {
+                    html = '<table><thead><tr><th>Folio</th><th>Cliente</th><th>Estado</th><th>Monto</th></tr></thead><tbody>';
+                    expedientes.forEach(exp => {
+                        html += `<tr><td>${exp.folio}</td><td>${exp.cliente}</td><td>${exp.estado}</td><td>$${exp.monto}</td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                }
+
+                document.getElementById('expedientesContainer').innerHTML = html;
+            } catch (error) {
+                document.getElementById('expedientesContainer').innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            }
+        }
+
+        async function handleCreateExpediente(e) {
+            e.preventDefault();
+
+            const expediente = {
+                folio: document.getElementById('folio').value,
+                cliente: document.getElementById('cliente').value,
+                estado: document.getElementById('estado').value,
+                monto: parseFloat(document.getElementById('monto').value) || 0,
+                moneda: 'MXN',
+                descripcion: document.getElementById('descripcion').value
+            };
+
+            try {
+                const response = await fetch(`${API_BASE}/api/expedientes`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-user-token': currentToken
+                    },
+                    body: JSON.stringify(expediente)
+                });
+
+                if (!response.ok) throw new Error('Error al crear');
+
+                document.getElementById('createMessage').innerHTML = '<div class="alert alert-success">✅ Expediente creado</div>';
+                document.getElementById('createForm').reset();
+                setTimeout(() => { switchTab('expedientes'); loadExpedientes(); }, 1000);
+            } catch (error) {
+                document.getElementById('createMessage').innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            }
+        }
+
+        async function handleSearch() {
+            const folio = document.getElementById('searchFolio').value;
+            if (!folio) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/expedientes/buscar/folio/${folio}`, {
+                    headers: { 'x-user-token': currentToken }
+                });
+
+                const exp = await response.json();
+                const html = `<div class="alert alert-success"><strong>Folio:</strong> ${exp.folio}<br><strong>Cliente:</strong> ${exp.cliente}<br><strong>Estado:</strong> ${exp.estado}</div>`;
+                document.getElementById('searchResults').innerHTML = html;
+            } catch (error) {
+                document.getElementById('searchResults').innerHTML = '<div class="alert alert-error">No encontrado</div>';
+            }
+        }
+
+        async function loadEstadisticas() {
+            try {
+                const response = await fetch(`${API_BASE}/api/estadisticas`, {
+                    headers: { 'x-user-token': currentToken }
+                });
+
+                const stats = await response.json();
+                document.getElementById('statsContainer').innerHTML = `
+                    <div class="stats-grid">
+                        <div class="stat-card"><h3>Total</h3><div class="number">${stats.total || 0}</div></div>
+                        <div class="stat-card"><h3>Abiertos</h3><div class="number">${stats.abiertos || 0}</div></div>
+                        <div class="stat-card"><h3>En Revisión</h3><div class="number">${stats.revision || 0}</div></div>
+                        <div class="stat-card"><h3>Entregados</h3><div class="number">${stats.entregados || 0}</div></div>
+                    </div>`;
+            } catch (error) {
+                console.error(error);
+            }
+        }
+
+        async function loadAuditoria() {
+            try {
+                const response = await fetch(`${API_BASE}/api/auditoria`, {
+                    headers: { 'x-user-token': currentToken }
+                });
+
+                const logs = await response.json();
+                let html = '';
+
+                if (logs.length === 0) {
+                    html = '<p style="color: #999;">Sin registros</p>';
+                } else {
+                    html = '<table><thead><tr><th>Acción</th><th>Tabla</th><th>Fecha</th></tr></thead><tbody>';
+                    logs.forEach(log => {
+                        html += `<tr><td>${log.accion}</td><td>${log.tabla}</td><td>${new Date(log.creado_en).toLocaleString('es-MX')}</td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                }
+
+                document.getElementById('auditoriaContainer').innerHTML = html;
+            } catch (error) {
+                document.getElementById('auditoriaContainer').innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            }
+        }
+    </script>
+</body>
+</html>
