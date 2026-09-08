@@ -2,232 +2,275 @@ const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const crypto = require('crypto');
 const path = require('path');
-const fs = require('fs');
 
 const app = express();
-const PORT = process.env.PORT || 3001;
-const DB_PATH = process.env.DATABASE_PATH || './prmdb.sqlite';
+const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
-app.use(bodyParser.json());
-app.use(express.static('public'));
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Database setup
-const db = new sqlite3.Database(DB_PATH, (err) => {
-  if (err) console.error('Database error:', err);
-  else console.log('Connected to SQLite database');
+const db = new sqlite3.Database(':memory:', (err) => {
+  if (err) {
+    console.error('Error opening database:', err);
+    process.exit(1);
+  }
+  console.log('Database initialized successfully');
 });
 
-// Initialize database
+// Initialize database tables
 db.serialize(() => {
+  // Users table
   db.run(`CREATE TABLE IF NOT EXISTS usuarios (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
+    usuario TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL,
     nombre TEXT,
     email TEXT,
-    creado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    rol TEXT DEFAULT 'abogado',
+    activo INTEGER DEFAULT 1,
+    fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
+  // Expedientes table
   db.run(`CREATE TABLE IF NOT EXISTS expedientes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     usuario_id INTEGER NOT NULL,
-    folio TEXT UNIQUE NOT NULL,
-    cliente TEXT NOT NULL,
-    estado TEXT NOT NULL,
-    monto REAL,
-    moneda TEXT DEFAULT 'MXN',
+    numero_expediente TEXT UNIQUE NOT NULL,
+    cliente_nombre TEXT NOT NULL,
+    tipo_expediente TEXT,
+    estado TEXT DEFAULT 'abierto',
     descripcion TEXT,
-    emisor_razon TEXT,
-    emisor_rfc TEXT,
-    receptor_razon TEXT,
-    receptor_rfc TEXT,
-    cfdi_uuid TEXT,
-    via TEXT,
-    semaforo TEXT,
-    creado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
-    actualizado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+    fecha_apertura DATETIME DEFAULT CURRENT_TIMESTAMP,
+    fecha_cierre DATETIME,
+    fecha_actualizacion DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
   )`);
 
+  // Tokens table
+  db.run(`CREATE TABLE IF NOT EXISTS tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    token TEXT UNIQUE NOT NULL,
+    fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+    fecha_expiracion DATETIME,
+    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+  )`);
+
+  // Auditoria table
   db.run(`CREATE TABLE IF NOT EXISTS auditoria (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    usuario_id INTEGER,
-    accion TEXT NOT NULL,
-    tabla TEXT NOT NULL,
-    registro_id INTEGER,
-    detalles TEXT,
-    ip TEXT,
-    creado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    usuario_id INTEGER NOT NULL,
+    tipo_accion TEXT,
+    tabla_afectada TEXT,
+    descripcion TEXT,
+    fecha_cambio DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
   )`);
 
   // Insert default admin user
-  db.run(`INSERT OR IGNORE INTO usuarios (username, password, nombre, email) 
-    VALUES (?, ?, ?, ?)`, 
-    [process.env.ADMIN_USER || 'contador_principal', 
-     process.env.ADMIN_PASS || 'P@ssw0rd$eguRA#2026!',
-     'Administrador',
-     process.env.ADMIN_EMAIL || 'admin@prm360.com']);
+  const adminPassword = 'P@ssw0rd$eguRA#2026!';
+  db.run(`INSERT OR IGNORE INTO usuarios (usuario, password, nombre, rol)
+    VALUES ('contador_principal', ?, 'Contador Principal', 'admin')`,
+    [adminPassword],
+    (err) => {
+      if (err) {
+        console.error('Error inserting admin user:', err);
+      } else {
+        console.log('Default admin user created/verified');
+      }
+    }
+  );
 });
 
-// Token storage (in-memory for simplicity)
-const tokens = new Map();
-
-// Helper functions
-function generateToken() {
-  return Math.random().toString(36).substring(2, 34);
-}
-
-function logAudit(userId, action, table, recordId, details, ip) {
-  db.run(`INSERT INTO auditoria (usuario_id, accion, tabla, registro_id, detalles, ip) 
-    VALUES (?, ?, ?, ?, ?, ?)`,
-    [userId, action, table, recordId, details, ip]);
-}
-
-// Authentication endpoint
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
-
-  db.get('SELECT * FROM usuarios WHERE username = ? AND password = ?',
-    [username, password],
-    (err, user) => {
-      if (err) return res.status(500).json({ error: 'Database error' });
-      if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-
-      const token = generateToken();
-      tokens.set(token, user.id);
-      logAudit(user.id, 'LOGIN', 'usuarios', user.id, 'User logged in', req.ip);
-      res.json({ token, user: { id: user.id, username: user.username } });
-    });
-});
-
-app.post('/api/logout', (req, res) => {
-  const token = req.headers['x-user-token'];
-  if (token) tokens.delete(token);
-  res.json({ message: 'Logged out' });
-});
-
-// Middleware to verify token
-function verifyToken(req, res, next) {
-  const token = req.headers['x-user-token'];
-  if (!token || !tokens.has(token)) {
-    return res.status(401).json({ error: 'Unauthorized' });
+// Token validation middleware
+function validarToken(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) {
+    return res.status(401).json({ error: 'Token required' });
   }
-  req.userId = tokens.get(token);
-  next();
+
+  db.get(
+    'SELECT * FROM tokens WHERE token = ? AND fecha_expiracion > datetime("now")',
+    [token],
+    (err, row) => {
+      if (err || !row) {
+        return res.status(401).json({ error: 'Invalid or expired token' });
+      }
+      req.usuarioId = row.usuario_id;
+      next();
+    }
+  );
 }
 
-// Expedientes endpoints
-app.get('/api/expedientes', verifyToken, (req, res) => {
-  db.all('SELECT * FROM expedientes WHERE usuario_id = ?', [req.userId], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows || []);
-  });
-});
+// API Routes
 
-app.post('/api/expedientes', verifyToken, (req, res) => {
-  const { folio, cliente, estado, monto, moneda, descripcion } = req.body;
-  db.run(
-    `INSERT INTO expedientes (usuario_id, folio, cliente, estado, monto, moneda, descripcion) 
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [req.userId, folio, cliente, estado, monto || 0, moneda || 'MXN', descripcion || ''],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      logAudit(req.userId, 'CREATE', 'expedientes', this.lastID, `Created: ${folio}`, req.ip);
-      res.json({ id: this.lastID, folio, cliente, estado });
-    }
-  );
-});
+// 1. Login endpoint
+app.post('/api/login', (req, res) => {
+  const { usuario, password } = req.body;
+  if (!usuario || !password) {
+    return res.status(400).json({ error: 'Usuario and password required' });
+  }
 
-app.get('/api/expedientes/:id', verifyToken, (req, res) => {
-  db.get('SELECT * FROM expedientes WHERE id = ? AND usuario_id = ?', 
-    [req.params.id, req.userId], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!row) return res.status(404).json({ error: 'Not found' });
-    res.json(row);
-  });
-});
-
-app.put('/api/expedientes/:id', verifyToken, (req, res) => {
-  const { folio, cliente, estado, monto } = req.body;
-  db.run(
-    `UPDATE expedientes SET folio=?, cliente=?, estado=?, monto=?, actualizado_en=CURRENT_TIMESTAMP 
-     WHERE id=? AND usuario_id=?`,
-    [folio, cliente, estado, monto, req.params.id, req.userId],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      logAudit(req.userId, 'UPDATE', 'expedientes', req.params.id, `Updated: ${folio}`, req.ip);
-      res.json({ message: 'Updated' });
-    }
-  );
-});
-
-app.delete('/api/expedientes/:id', verifyToken, (req, res) => {
-  db.run('DELETE FROM expedientes WHERE id = ? AND usuario_id = ?',
-    [req.params.id, req.userId],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      logAudit(req.userId, 'DELETE', 'expedientes', req.params.id, 'Deleted', req.ip);
-      res.json({ message: 'Deleted' });
-    }
-  );
-});
-
-// Search and filter endpoints
-app.get('/api/expedientes/buscar/folio/:folio', verifyToken, (req, res) => {
-  db.get('SELECT * FROM expedientes WHERE folio = ? AND usuario_id = ?',
-    [req.params.folio, req.userId], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!row) return res.status(404).json({ error: 'Not found' });
-    res.json(row);
-  });
-});
-
-app.get('/api/expedientes/filtro/estado/:estado', verifyToken, (req, res) => {
-  db.all('SELECT * FROM expedientes WHERE estado = ? AND usuario_id = ?',
-    [req.params.estado, req.userId], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows || []);
-  });
-});
-
-// Statistics endpoint
-app.get('/api/estadisticas', verifyToken, (req, res) => {
-  db.all(
-    `SELECT COUNT(*) as total, 
-            SUM(CASE WHEN estado='Abierto' THEN 1 ELSE 0 END) as abiertos,
-            SUM(CASE WHEN estado='En Revisión' THEN 1 ELSE 0 END) as revision,
-            SUM(CASE WHEN estado='Entregado' THEN 1 ELSE 0 END) as entregados
-     FROM expedientes WHERE usuario_id = ?`,
-    [req.userId],
+  db.get(
+    'SELECT * FROM usuarios WHERE usuario = ? AND password = ?',
+    [usuario, password],
     (err, row) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json(row ? row[0] : { total: 0, abiertos: 0, revision: 0, entregados: 0 });
+      if (err || !row) {
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+
+      const token = crypto.randomBytes(32).toString('hex');
+      const expirationTime = new Date();
+      expirationTime.setHours(expirationTime.getHours() + 24);
+
+      db.run(
+        'INSERT INTO tokens (usuario_id, token, fecha_expiracion) VALUES (?, ?, ?)',
+        [row.id, token, expirationTime.toISOString()],
+        (err) => {
+          if (err) {
+            return res.status(500).json({ error: 'Error creating token' });
+          }
+          res.json({ token, usuario: row.usuario });
+        }
+      );
     }
   );
 });
 
-// Audit log endpoint
-app.get('/api/auditoria', verifyToken, (req, res) => {
-  db.all('SELECT * FROM auditoria WHERE usuario_id = ? ORDER BY creado_en DESC LIMIT 100',
-    [req.userId], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows || []);
-  });
+// 2. Logout endpoint
+app.post('/api/logout', validarToken, (req, res) => {
+  res.json({ message: 'Logged out successfully' });
 });
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+// 3. Create expediente
+app.post('/api/expedientes', validarToken, (req, res) => {
+  const { numero_expediente, cliente_nombre, tipo_expediente, descripcion } = req.body;
+
+  db.run(
+    `INSERT INTO expedientes (usuario_id, numero_expediente, cliente_nombre, tipo_expediente, descripcion)
+     VALUES (?, ?, ?, ?, ?)`,
+    [req.usuarioId, numero_expediente, cliente_nombre, tipo_expediente, descripcion],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.status(201).json({ id: this.lastID, message: 'Expediente created' });
+    }
+  );
 });
 
-// Serve web interface
+// 4. Get expedientes
+app.get('/api/expedientes', validarToken, (req, res) => {
+  db.all(
+    'SELECT * FROM expedientes WHERE usuario_id = ? ORDER BY fecha_apertura DESC',
+    [req.usuarioId],
+    (err, rows) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json(rows || []);
+    }
+  );
+});
+
+// 5. Get expediente by ID
+app.get('/api/expedientes/:id', validarToken, (req, res) => {
+  db.get(
+    'SELECT * FROM expedientes WHERE id = ? AND usuario_id = ?',
+    [req.params.id, req.usuarioId],
+    (err, row) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      if (!row) {
+        return res.status(404).json({ error: 'Expediente not found' });
+      }
+      res.json(row);
+    }
+  );
+});
+
+// 6. Update expediente
+app.put('/api/expedientes/:id', validarToken, (req, res) => {
+  const { estado, descripcion } = req.body;
+
+  db.run(
+    `UPDATE expedientes SET estado = ?, descripcion = ?, fecha_actualizacion = datetime('now')
+     WHERE id = ? AND usuario_id = ?`,
+    [estado, descripcion, req.params.id, req.usuarioId],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json({ message: 'Expediente updated' });
+    }
+  );
+});
+
+// 7. Delete expediente
+app.delete('/api/expedientes/:id', validarToken, (req, res) => {
+  db.run(
+    'DELETE FROM expedientes WHERE id = ? AND usuario_id = ?',
+    [req.params.id, req.usuarioId],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json({ message: 'Expediente deleted' });
+    }
+  );
+});
+
+// 8. Get usuarios (admin only)
+app.get('/api/usuarios', validarToken, (req, res) => {
+  db.all(
+    'SELECT id, usuario, nombre, rol, activo FROM usuarios',
+    (err, rows) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json(rows || []);
+    }
+  );
+});
+
+// 9. Auditoria
+app.get('/api/auditoria', validarToken, (req, res) => {
+  db.all(
+    `SELECT * FROM auditoria WHERE usuario_id = ? ORDER BY fecha_cambio DESC LIMIT 100`,
+    [req.usuarioId],
+    (err, rows) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json(rows || []);
+    }
+  );
+});
+
+// 10. Serve login page
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'consola_enhanced_v2.html'));
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// 11. Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// Start server
 app.listen(PORT, () => {
-  console.log(`PRM360 Server running on port ${PORT}`);
+  console.log(`Servidor escuchando en puerto ${PORT}`);
 });
