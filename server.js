@@ -8,6 +8,16 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Error handlers for uncaught exceptions
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 // Middleware
 app.use(cors());
 app.use(bodyParser.json({ limit: '50mb' }));
@@ -99,44 +109,56 @@ function validarToken(req, res, next) {
     'SELECT * FROM tokens WHERE token = ? AND fecha_expiracion > datetime("now")',
     [token],
     (err, row) => {
-      if (err || !row) {
-        return res.status(401).json({ error: 'Invalid or expired token' });
+      if (err) {
+        console.error('Token validation error:', err);
+        return res.status(401).json({ error: 'Invalid token' });
       }
-      req.usuarioId = row.usuario_id;
+      if (!row) {
+        return res.status(401).json({ error: 'Token expired or invalid' });
+      }
+      req.usuario_id = row.usuario_id;
       next();
     }
   );
 }
 
-// API Routes
-
 // 1. Login endpoint
 app.post('/api/login', (req, res) => {
   const { usuario, password } = req.body;
-  if (!usuario || !password) {
-    return res.status(400).json({ error: 'Usuario and password required' });
-  }
 
   db.get(
     'SELECT * FROM usuarios WHERE usuario = ? AND password = ?',
     [usuario, password],
     (err, row) => {
-      if (err || !row) {
-        return res.status(401).json({ error: 'Invalid credentials' });
+      if (err) {
+        console.error('Login error:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+
+      if (!row) {
+        return res.status(401).json({ message: 'Invalid credentials' });
       }
 
       const token = crypto.randomBytes(32).toString('hex');
-      const expirationTime = new Date();
-      expirationTime.setHours(expirationTime.getHours() + 24);
+      const expirationDate = new Date();
+      expirationDate.setHours(expirationDate.getHours() + 24);
 
       db.run(
         'INSERT INTO tokens (usuario_id, token, fecha_expiracion) VALUES (?, ?, ?)',
-        [row.id, token, expirationTime.toISOString()],
+        [row.id, token, expirationDate.toISOString()],
         (err) => {
           if (err) {
-            return res.status(500).json({ error: 'Error creating token' });
+            console.error('Token creation error:', err);
+            return res.status(500).json({ error: 'Failed to create token' });
           }
-          res.json({ token, usuario: row.usuario });
+
+          res.json({
+            success: true,
+            token: token,
+            rol: row.rol,
+            usuario: row.usuario,
+            nombre: row.nombre
+          });
         }
       );
     }
@@ -145,7 +167,19 @@ app.post('/api/login', (req, res) => {
 
 // 2. Logout endpoint
 app.post('/api/logout', validarToken, (req, res) => {
-  res.json({ message: 'Logged out successfully' });
+  const token = req.headers.authorization?.split(' ')[1];
+
+  db.run(
+    'DELETE FROM tokens WHERE token = ?',
+    [token],
+    (err) => {
+      if (err) {
+        console.error('Logout error:', err);
+        return res.status(500).json({ error: 'Logout failed' });
+      }
+      res.json({ success: true, message: 'Logged out successfully' });
+    }
+  );
 });
 
 // 3. Create expediente
@@ -155,12 +189,13 @@ app.post('/api/expedientes', validarToken, (req, res) => {
   db.run(
     `INSERT INTO expedientes (usuario_id, numero_expediente, cliente_nombre, tipo_expediente, descripcion)
      VALUES (?, ?, ?, ?, ?)`,
-    [req.usuarioId, numero_expediente, cliente_nombre, tipo_expediente, descripcion],
+    [req.usuario_id, numero_expediente, cliente_nombre, tipo_expediente, descripcion],
     function(err) {
       if (err) {
+        console.error('Create expediente error:', err);
         return res.status(500).json({ error: err.message });
       }
-      res.status(201).json({ id: this.lastID, message: 'Expediente created' });
+      res.json({ success: true, id: this.lastID });
     }
   );
 });
@@ -168,24 +203,26 @@ app.post('/api/expedientes', validarToken, (req, res) => {
 // 4. Get expedientes
 app.get('/api/expedientes', validarToken, (req, res) => {
   db.all(
-    'SELECT * FROM expedientes WHERE usuario_id = ? ORDER BY fecha_apertura DESC',
-    [req.usuarioId],
+    'SELECT * FROM expedientes WHERE usuario_id = ?',
+    [req.usuario_id],
     (err, rows) => {
       if (err) {
+        console.error('Get expedientes error:', err);
         return res.status(500).json({ error: err.message });
       }
-      res.json(rows || []);
+      res.json(rows);
     }
   );
 });
 
-// 5. Get expediente by ID
+// 5. Get single expediente
 app.get('/api/expedientes/:id', validarToken, (req, res) => {
   db.get(
     'SELECT * FROM expedientes WHERE id = ? AND usuario_id = ?',
-    [req.params.id, req.usuarioId],
+    [req.params.id, req.usuario_id],
     (err, row) => {
       if (err) {
+        console.error('Get expediente error:', err);
         return res.status(500).json({ error: err.message });
       }
       if (!row) {
@@ -203,12 +240,13 @@ app.put('/api/expedientes/:id', validarToken, (req, res) => {
   db.run(
     `UPDATE expedientes SET estado = ?, descripcion = ?, fecha_actualizacion = datetime('now')
      WHERE id = ? AND usuario_id = ?`,
-    [estado, descripcion, req.params.id, req.usuarioId],
+    [estado, descripcion, req.params.id, req.usuario_id],
     function(err) {
       if (err) {
+        console.error('Update expediente error:', err);
         return res.status(500).json({ error: err.message });
       }
-      res.json({ message: 'Expediente updated' });
+      res.json({ success: true, changes: this.changes });
     }
   );
 });
@@ -217,39 +255,39 @@ app.put('/api/expedientes/:id', validarToken, (req, res) => {
 app.delete('/api/expedientes/:id', validarToken, (req, res) => {
   db.run(
     'DELETE FROM expedientes WHERE id = ? AND usuario_id = ?',
-    [req.params.id, req.usuarioId],
+    [req.params.id, req.usuario_id],
     function(err) {
       if (err) {
+        console.error('Delete expediente error:', err);
         return res.status(500).json({ error: err.message });
       }
-      res.json({ message: 'Expediente deleted' });
+      res.json({ success: true, deleted: this.changes });
     }
   );
 });
 
-// 8. Get usuarios (admin only)
-app.get('/api/usuarios', validarToken, (req, res) => {
-  db.all(
-    'SELECT id, usuario, nombre, rol, activo FROM usuarios',
-    (err, rows) => {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
-      res.json(rows || []);
+// 8. Get usuarios
+app.get('/api/usuarios', (req, res) => {
+  db.all('SELECT id, usuario, nombre, rol FROM usuarios', (err, rows) => {
+    if (err) {
+      console.error('Get usuarios error:', err);
+      return res.status(500).json({ error: err.message });
     }
-  );
+    res.json(rows);
+  });
 });
 
-// 9. Auditoria
+// 9. Get auditoria
 app.get('/api/auditoria', validarToken, (req, res) => {
   db.all(
-    `SELECT * FROM auditoria WHERE usuario_id = ? ORDER BY fecha_cambio DESC LIMIT 100`,
-    [req.usuarioId],
+    'SELECT * FROM auditoria WHERE usuario_id = ? ORDER BY fecha_cambio DESC LIMIT 100',
+    [req.usuario_id],
     (err, rows) => {
       if (err) {
+        console.error('Get auditoria error:', err);
         return res.status(500).json({ error: err.message });
       }
-      res.json(rows || []);
+      res.json(rows);
     }
   );
 });
@@ -271,6 +309,12 @@ app.use((err, req, res, next) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Servidor escuchando en puerto ${PORT}`);
+});
+
+// Handle server errors
+server.on('error', (err) => {
+  console.error('Server error:', err);
+  process.exit(1);
 });
